@@ -1,0 +1,260 @@
+---
+title: "Final Assessment"
+author: "R Aucamp"
+date: "2023-02-28"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### 1. Introduction
+
+This report will be submitted as the final assignment at the end of the the Data Science as a Field Course. The COVID-19 Data is downloaded from the John Hopkins University GitHub repository. The data set contains records about number of cases and deaths from the the COVID-19 virus at a national and global level between 2020 and 2023. I followed along with the class examples and I will do an analysis of the South African data.    
+
+### 2. Data Wrangling
+
+#### 2.1 Loading Libraries
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(prettydoc)
+library(xtable)
+library(knitr)
+```
+
+#### 2.2 Data Import
+
+I am importing the csv files from the Johns Hopkins Github repository. The link to the repository is https://github.com/CSSEGISandData/ 
+
+Time series summary (csse_covid_19_time_series)
+This folder contains daily time series summary tables, including confirmed, deaths and recovered. All data is read in from the daily case report. The time series tables are subject to be updated if inaccuracies are identified in our historical data.
+
+Two time series tables are for the US confirmed cases and deaths, reported at the county level. They are named time_series_covid19_confirmed_US.csv, time_series_covid19_deaths_US.csv, respectively.
+
+Three time series tables are for the global confirmed cases, recovered cases and deaths. Australia, Canada and China are reported at the province/state level. Dependencies of the Netherlands, the UK, France and Denmark are listed under the province/state level. The US and other countries are at the country level. The tables are renamed time_series_covid19_confirmed_global.csv and time_series_covid19_deaths_global.csv, and time_series_covid19_recovered_global.csv, respectively.
+
+```{r}
+
+url_begin <- 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/' 
+
+files <- c('time_series_covid19_confirmed_global.csv',
+            'time_series_covid19_deaths_global.csv',
+            'time_series_covid19_confirmed_US.csv',
+            'time_series_covid19_deaths_US.csv')
+
+urls <- str_c(url_begin, files)
+
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+US_cases <- read_csv(urls[3])
+US_deaths <- read_csv(urls[4])
+uid <- read_csv("data/UID_ISO_FIPS_LookUp_Table.csv")
+
+```
+
+The global_cases dataset contains  `r nrow(global_cases)` Rows and `r ncol(global_cases)` Columns.
+The global_deaths dataset contains  `r nrow(global_deaths)` Rows and `r ncol(global_deaths)` Columns.
+
+The US_cases dataset contains  `r nrow(US_cases)` Rows and `r ncol(US_cases)` Columns.
+The US_deaths dataset contains  `r nrow(US_deaths)` Rows and `r ncol(US_deaths)` Columns.
+
+The global_cases and global_deaths have a Province/State, Country/Region, Lat, Long, and Date Column.
+
+#### 2.3 Tidy Data
+
+We would rather have the dates as rows than columns and therefore we use the pivot longer option to transform the dataset into a tidy format. We will also not use the Lat, Long columns and remove it from the dataset. We convert the data column to contain a date object.
+
+```{r}
+
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(-c(Lat,Long))
+
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(-c(Lat,Long))
+
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = 'Country/Region',
+         Province_State = 'Province/State') %>%
+  mutate(date = mdy(date))
+
+```
+
+When looking at a summary of the global cases we can see that there are a lot of rows with zero cases and we would like to filter them out. We also check the cases above 28 000 000 to see if it is valid.
+
+```{r}
+
+summary(global)
+
+global <- global %>% filter(cases > 0)
+
+summary(global)
+
+#global <- global %>% filter(cases > 28000000)
+
+```
+
+On the US cases and US deaths dataset we also pivot the dates to be rows and not columns and remove the iso2, iso3, code3, FIPS, Lat and Long columns. Again we convert the data column to contain a date object.
+
+```{r}
+
+US_cases <- US_cases %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = 'date',
+               values_to = 'cases') %>%
+  select(UID:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(iso2, iso3, code3, FIPS, Lat, Long_))
+
+US_deaths <- US_deaths %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = 'date',
+               values_to = 'deaths') %>%
+  select(UID:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(iso2, iso3, code3, FIPS, Lat, Long_))
+
+US <- US_cases %>%
+  full_join(US_deaths)
+
+global <- global %>%
+  unite('Combined_Key',
+        c(Province_State, Country_Region),
+        sep=',',
+        na.rm = TRUE,
+        remove = FALSE)
+```
+
+``` {r}
+
+global <- global %>%
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID,FIPS)) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, Population)
+```
+
+### 3. Data Exploration
+#### 3.1 Transformation
+
+I wanted to work with South African data and therefore I filtered by Country and also removed all the dates with no cases.
+
+``` {r}
+
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths)) %>%
+  select(Province_State, Country_Region, date, cases, deaths) %>%
+  ungroup()
+
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths)) %>%
+  select(Country_Region, date, cases, deaths) %>%
+  ungroup()
+
+SA_totals <- global %>%
+  filter(Country_Region == 'South Africa') %>%
+  filter(cases > 0)
+
+Africa_totals <- global %>%
+filter(Country_Region %in% c('South Africa', 'Namibia', 'Botswana', 'Zimbabwe', 'Mozambique'))
+```
+
+#### 3.2 Visualisation
+The first graph shows the number of cases and number of deaths with the x axis representing the time line. I did a log scale on the y axis to show cases vs deaths.
+
+``` {r}
+SA_totals %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = 'cases')) +
+  geom_line(aes(y = deaths, color = 'deaths')) +
+  scale_y_log10() +
+  theme(legend.position = 'bottom',
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = 'South Africa COVID19 Cases', y = NULL)
+```
+
+It was difficult to see the number of cases so I changed the Y axis from scientific notation to digits.
+
+``` {r}
+SA_totals %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = 'cases')) +
+  geom_line(aes(y = deaths, color = 'deaths')) +
+  scale_y_continuous(labels = scales::comma) +
+  theme(legend.position = 'bottom',
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = 'South Africa COVID19 Cases', y = NULL)
+```
+
+I also wanted to see the number of deaths
+
+```{r}
+SA_totals %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(y = deaths), color = "#00bfc4") +
+  scale_y_continuous(labels = scales::comma) +
+  theme(legend.position = 'bottom',
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = 'South Africa COVID19 Deaths', y = NULL)
+```
+
+Lastly I wanted to compare South Africa to our Neighboring Countries.
+
+``` {r}
+Africa_totals %>%  
+  ggplot(aes(x = Country_Region, y = cases, fill = Country_Region)) +
+  geom_bar(stat='identity') +
+  scale_y_continuous(labels = scales::comma) +
+  ggtitle("Covid Cases") + xlab("Country") + ylab("Cases")
+```
+
+#### 3.3 Model
+
+``` {r}
+
+SA_totals_sum <- SA_totals %>%
+  summarise(cases_per_thou = 1000 * cases / Population,
+            deaths_per_thou = 1000 * deaths / Population)
+
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = SA_totals_sum)
+summary(mod)
+
+```
+
+### 4. Bias Identification
+
+There are several potential biases that could be part of COVID-19 data.
+
+Testing bias: The number of confirmed cases is heavily dependent on the number of tests performed. If certain populations are more likely to get tested (e.g., those with symptoms, those who are more aware of the virus, those with access to healthcare), then the number of confirmed cases may not be representative of the true prevalence of the virus in the population.
+
+Reporting bias: The accuracy and completeness of COVID-19 data can vary by location and over time. Differences in testing practices, reporting methods, and the availability of resources to collect and analyze data can all contribute to reporting bias.
+
+Selection bias: The COVID-19 pandemic has disproportionately affected certain groups, such as older adults and those with underlying health conditions. If certain groups are more likely to be tested or more likely to be included in official case counts, this could lead to selection bias in the data.
+
+Surveillance bias: Some countries may have better surveillance systems in place to detect and report COVID-19 cases than others. This could lead to differences in case counts and mortality rates across countries that are not necessarily due to underlying differences in the virus itself, but rather differences in detection and reporting.
+
+
+### 5. Conclusion
+
+From the analysis we can see that South Africa had reported more than 4 million COVID-19 Cases and just over 100 Thousand Deaths. We can also see that the number of COVID-19 cases are considerably higher that any of the Neighboring Countries. 
+
+#### Session Info
+
+```{r info, echo=FALSE}
+sessionInfo()
+```
